@@ -1,5 +1,3 @@
-
-
 #include "Tmc2209.h"
 #include <stdio.h>
 #include "Oled.h"
@@ -11,7 +9,7 @@ extern UART_HandleTypeDef huart1;
 
 /*
  * ============================================================================
- * 这份工程当前实际只写 4 个核心寄存器（参考: TMC2209 Datasheet Rev1.09）：
+ * 4 个核心寄存器（参考: TMC2209 Datasheet Rev1.09）：
  * 1. GCONF       (0x00)  全局功能开关
  * 2. IHOLD_IRUN  (0x10)  保持/运行电流
  * 3. VACTUAL     (0x22)  内部速度模式，这里固定为 0，不使用
@@ -35,10 +33,10 @@ extern UART_HandleTypeDef huart1;
 //   [1:0]   Reserved                       保留位
 //
 //   当前配置含义:
-//     StealthChop2 静音模式 | UART 控制使能 | STEP 脉冲滤波使能
+//     SpreadCycle 动态模式 (高扭矩) | UART 控制使能 | STEP 脉冲滤波使能
 //     → 电机方向正常、微步由硬件引脚决定
 // ============================================================================
-static const uint32_t TMC2209_GCONF_VALUE = 0x00000180;
+static const uint32_t TMC2209_GCONF_VALUE = 0x00000184;
 
 // ============================================================================
 // CHOPCONF (0x6C): 斩波控制寄存器
@@ -84,7 +82,7 @@ static const uint32_t TMC2209_GCONF_VALUE = 0x00000180;
 //     全步模式 | MicroPlyer 插值使能(平滑) | 16clk 空白时间
 //     | TOFF=3 | HSTRT=5 / HEND=0 | VSense=325mV 高灵敏度
 // ============================================================================
-static const uint32_t TMC2209_CHOPCONF_VALUE = 0x16000053;
+static const uint32_t TMC2209_CHOPCONF_VALUE = 0x11000053;
 
 // ============================================================================
 // IHOLD_IRUN (0x10): 电流控制寄存器
@@ -118,14 +116,18 @@ static const uint32_t TMC2209_CHOPCONF_VALUE = 0x16000053;
 //   │ 0.83A    │ 14   │ 7     │ 0x00060E07   │
 //   │ 1.00A    │ 17   │ 8     │ 0x00061108   │
 //   │ 1.22A    │ 21   │ 10    │ 0x0006150A   │
+//   │ 1.33A    │ 23   │ 11    │ 0x0006170B   │
 //   │ 1.50A    │ 26   │ 13    │ 0x00061A0D   │
 //   │ 1.77A(Max)│31   │ 15    │ 0x00061F0F   │
 //   └──────────┴──────┴───────┴──────────────┘
 //
-//   当前配置含义:
-//     运行电流 1.00A RMS / 保持电流 0.50A RMS / 延迟 65ms 后切入保持电流
 // ============================================================================
-static const uint32_t TMC2209_IHOLD_IRUN_VALUE = 0x00061108;
+
+// PITCH 轴 (addr 0) 额定 1.3A，采用保守设置: 1.00A RMS (IRUN=17), 保持电流 0.50A RMS (IHOLD=8)
+static const uint32_t TMC2209_IHOLD_IRUN_VALUE_PITCH = 0x0006150A;
+
+// YAW 轴 (addr 1) 额定 1.5A，采用保守设置: 1.22A RMS (IRUN=21), 保持电流 0.61A RMS (IHOLD=10)
+static const uint32_t TMC2209_IHOLD_IRUN_VALUE_YAW = 0x00061A0D;
 
 // ============================================================================
 // VACTUAL (0x22): 内部速度模式寄存器 (内部脉冲发生器)
@@ -242,7 +244,19 @@ void Tmc2209_Init(uint8_t tmc_addr)
     delay_ms(100);
     TMC2209_WriteReg(tmc_addr, TMC2209_GCONF, TMC2209_GCONF_VALUE);
     TMC2209_WriteReg(tmc_addr, TMC2209_CHOPCONF, TMC2209_CHOPCONF_VALUE);
-    TMC2209_WriteReg(tmc_addr, TMC2209_IHOLD_IRUN, TMC2209_IHOLD_IRUN_VALUE);
+    
+    // 根据电机地址配置不同的电流
+    if (tmc_addr == 0)
+    {
+        // PITCH 轴
+        TMC2209_WriteReg(tmc_addr, TMC2209_IHOLD_IRUN, TMC2209_IHOLD_IRUN_VALUE_PITCH);
+    }
+    else if (tmc_addr == 1)
+    {
+        // YAW 轴
+        TMC2209_WriteReg(tmc_addr, TMC2209_IHOLD_IRUN, TMC2209_IHOLD_IRUN_VALUE_YAW);
+    }
+
     TMC2209_WriteReg(tmc_addr, TMC2209_VACTUAL, TMC2209_VACTUAL_VALUE);
 
     delay_ms(50);
@@ -251,7 +265,7 @@ void Tmc2209_Init(uint8_t tmc_addr)
     uint8_t retry = 0;
     uint8_t read_ok = 0;
 
-    const uint32_t expected_gconf_mask = 0x00000180;
+    const uint32_t expected_gconf_mask = 0x00000184;
     while (retry < 10)
     {
         if (TMC2209_ReadReg_Robust(tmc_addr, TMC2209_GCONF, &read_val))

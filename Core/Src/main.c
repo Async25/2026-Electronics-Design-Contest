@@ -48,6 +48,8 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+SPI_HandleTypeDef hspi1;
+
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
@@ -65,7 +67,6 @@ uint32_t uart_y;
 uint8_t Runflag = 0; // 初始为不运行
 uint8_t SerialLossFlag = 0;
 float accel = 500.0f;
-static uint16_t tim2_count = 0;
 static uint16_t serial_loss_count = 0;
 /* USER CODE END PV */
 
@@ -77,6 +78,7 @@ static void MX_TIM3_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_UART5_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -120,6 +122,7 @@ int main(void)
   MX_USART1_UART_Init();
   MX_UART5_Init();
   MX_TIM2_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
   DWT_Init();
   OLED_Init();
@@ -191,6 +194,70 @@ int main(void)
     OLED_String(0, 36, "Run:", 12);
     OLED_String(45, 36, Runflag ? "ON " : "OFF", 12);
 
+    // 运动控制
+    if (Runflag)
+    {
+      // YAW 轴追踪 (X坐标)
+      pidYAW.Target = 320.0f;
+      pidYAW.Actual = (float)uart_x;
+
+      if (fabsf(pidYAW.Target - pidYAW.Actual) < 8.0f)
+      {
+        pidYAW.Out = 0;
+        pidYAW.Error1 = 0;
+        pidYAW.Error2 = 0;
+      }
+      else
+      {
+        PID_Update(&pidYAW);
+      }
+
+      Stepper_Set_Speed_Profile(&YAW, -pidYAW.Out, accel);
+      if (YAW.state == STOP && fabsf(pidYAW.Out) > 0.5f) {
+        Stepper_Run_Speed(&YAW);
+      } else if (fabsf(pidYAW.Out) < 0.5f) {
+        Stepper_Stop(&YAW);
+      }
+
+      // PITCH 轴追踪 (Y坐标)
+      pidPITCH.Target = 240.0f;
+      pidPITCH.Actual = (float)uart_y;
+
+      if (fabsf(pidPITCH.Target - pidPITCH.Actual) < 8.0f)
+      {
+        pidPITCH.Out = 0;
+        pidPITCH.Error1 = 0;
+        pidPITCH.Error2 = 0;
+      }
+      else
+      {
+        PID_Update(&pidPITCH);
+      }
+
+      Stepper_Set_Speed_Profile(&PITCH, pidPITCH.Out, accel);
+      if (PITCH.state == STOP && fabsf(pidPITCH.Out) > 0.5f) 
+      {
+        Stepper_Run_Speed(&PITCH);
+      } 
+      else if (fabsf(pidPITCH.Out) < 0.5f) 
+      {
+        Stepper_Stop(&PITCH);
+      }
+    }
+    else
+    {
+      Stepper_Stop(&YAW);
+      Stepper_Stop(&PITCH);
+
+      pidYAW.Out = 0;
+      pidPITCH.Out = 0;
+
+      pidYAW.Error1 = 0;
+      pidYAW.Error2 = 0;
+      pidPITCH.Error1 = 0;
+      pidPITCH.Error2 = 0;
+    }
+
     int key_flag = Key_Scan();
     if (key_flag != 0) 
     {
@@ -249,6 +316,44 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI1_Init(void)
+{
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
+
 }
 
 /**
@@ -528,6 +633,9 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOE, PITCH_DIR_Pin|OLED_SCL_Pin, GPIO_PIN_SET);
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(SPI1_CS_GPIO_Port, SPI1_CS_Pin, GPIO_PIN_RESET);
+
   /*Configure GPIO pins : OLED_SDA_Pin YAW_DIR_Pin */
   GPIO_InitStruct.Pin = OLED_SDA_Pin|YAW_DIR_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -562,6 +670,19 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : INT_Pin */
+  GPIO_InitStruct.Pin = INT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(INT_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : SPI1_CS_Pin */
+  GPIO_InitStruct.Pin = SPI1_CS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(SPI1_CS_GPIO_Port, &GPIO_InitStruct);
+
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
   /* USER CODE END MX_GPIO_Init_2 */
@@ -585,76 +706,6 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   {
     Runflag = 1;
     serial_loss_count = 0;
-  }
-
-  tim2_count ++;
-
-  if (tim2_count % 3 == 0)
-  {
-    tim2_count = 0;
-
-    if (Runflag)
-    {
-      // --- YAW 轴追踪 (X坐标) ---
-      pidYAW.Target = 320.0f;
-      pidYAW.Actual = (float)uart_x;
-
-      if (fabsf(pidYAW.Target - pidYAW.Actual) < 8.0f)
-      {
-        pidYAW.Out = 0;
-        pidYAW.Error1 = 0;
-        pidYAW.Error2 = 0;
-      }
-      else
-      {
-        PID_Update(&pidYAW);
-      }
-
-      Stepper_Set_Speed_Profile(&YAW, -pidYAW.Out, accel);
-      if (YAW.state == STOP && fabsf(pidYAW.Out) > 0.5f) {
-        Stepper_Run_Speed(&YAW);
-      } else if (fabsf(pidYAW.Out) < 0.5f) {
-        Stepper_Stop(&YAW);
-      }
-
-      // --- PITCH 轴追踪 (Y坐标) ---
-      pidPITCH.Target = 240.0f;
-      pidPITCH.Actual = (float)uart_y;
-
-      if (fabsf(pidPITCH.Target - pidPITCH.Actual) < 8.0f)
-      {
-        pidPITCH.Out = 0;
-        pidPITCH.Error1 = 0;
-        pidPITCH.Error2 = 0;
-      }
-      else
-      {
-        PID_Update(&pidPITCH);
-      }
-
-      Stepper_Set_Speed_Profile(&PITCH, pidPITCH.Out, accel);
-      if (PITCH.state == STOP && fabsf(pidPITCH.Out) > 0.5f) 
-      {
-        Stepper_Run_Speed(&PITCH);
-      } 
-      else if (fabsf(pidPITCH.Out) < 0.5f) 
-      {
-        Stepper_Stop(&PITCH);
-      }
-    }
-    else
-    {
-      Stepper_Stop(&YAW);
-      Stepper_Stop(&PITCH);
-
-      pidYAW.Out = 0;
-      pidPITCH.Out = 0;
-
-      pidYAW.Error1 = 0;
-      pidYAW.Error2 = 0;
-      pidPITCH.Error1 = 0;
-      pidPITCH.Error2 = 0;
-    }
   }
 }
 
